@@ -51,6 +51,24 @@ class _CatalogLoadRequest:
     force: bool
 
 
+def _identity_repo_url(identity: PluginIdentity) -> Optional[str]:
+    """
+    把身份中的可信来源或当前载荷来源投影为公开仓库地址。
+
+    已安装卡片本身不带来源，项目主页一类的入口要的是安装事实：优先取绑定的
+    可信仓库，未绑定但载荷来自在线仓库时退回载荷来源；本地载荷两个键都为空。
+    """
+    for source_key in (identity.trusted_source_key, identity.payload_source_key):
+        if not source_key:
+            continue
+        try:
+            _, repo_url = normalize_github_plugin_source(source_key)
+        except ValueError:
+            continue
+        return repo_url
+    return None
+
+
 def apply_declared_metadata_fallback(
     plugins: Sequence[Plugin],
     identities: Mapping[str, PluginIdentity],
@@ -86,6 +104,10 @@ def apply_declared_metadata_fallback(
                 )
             else:
                 updates["source_binding_status"] = PluginSourceBindingStatus.BOUND
+        if identity is not None and not plugin.repo_url:
+            repo_url = _identity_repo_url(identity)
+            if repo_url:
+                updates["repo_url"] = repo_url
         if (
             identity is None
             or identity.declared_metadata is None

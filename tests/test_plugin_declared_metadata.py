@@ -260,3 +260,47 @@ def test_installed_card_marks_runtime_incompatibility_from_declared_snapshot() -
     )
     assert on_standard[0].runtime_compatible is not False
     assert on_standard[0].runtime_message is None
+
+
+def test_installed_card_repo_url_projects_bound_source_without_overriding() -> None:
+    """
+    已安装卡片的项目主页来自安装来源：绑定仓库优先，本地未绑定不投影，
+    卡片已有显式来源时不被身份覆盖。
+    """
+    bound = _identity(_metadata({"name": "Bound"}), plugin_id="BoundPlugin")
+    local_only = PluginIdentity(
+        plugin_id="LocalPlugin",
+        normalized_plugin_id="localplugin",
+        trusted_source_type=TrustedPluginSourceType.UNKNOWN,
+        trusted_source_key=None,
+        binding_basis=PluginBindingBasis.LOCAL_ONLY,
+        payload_source_type=PluginPayloadSourceType.LOCAL,
+        payload_source_key=None,
+        declared_version="1.0.0",
+        package_generation="v3",
+        declared_metadata=_metadata({"name": "Local"}, version="1.0.0"),
+        payload_receipt="sha256:" + "1" * 64,
+        revision=1,
+        created_at=NOW,
+        updated_at=NOW,
+        bound_at=None,
+        payload_applied_at=NOW,
+    )
+    plugins = [
+        Plugin(id="BoundPlugin", plugin_name="Bound", installed=True),
+        Plugin(id="LocalPlugin", plugin_name="Local", installed=True),
+        Plugin(
+            id="BoundPlugin",
+            plugin_name="Bound",
+            installed=True,
+            repo_url="https://github.com/other/repo",
+        ),
+    ]
+
+    result = apply_declared_metadata_fallback(
+        plugins,
+        {"boundplugin": bound, "localplugin": local_only},
+    )
+    assert result[0].repo_url == "https://github.com/jxxghp/moviepilot-plugins"
+    assert result[1].repo_url is None
+    assert result[2].repo_url == "https://github.com/other/repo"
