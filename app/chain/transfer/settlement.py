@@ -78,6 +78,25 @@ def _discard_corrupt_transfer_task(
             logger.error(f"清理损坏整理任务 durable 证据失败：{task.admission_task_id} - {cleanup_error}")
 
 
+def _normalize_legacy_fileitem_timestamps(current: object, frozen: object) -> None:
+    """
+    比对旧快照时移除模型恢复新增的空时间字段，保留实际记录的时间证据。
+
+    :param current: 本次结果新建的 JSON 比对副本
+    :param frozen: 原始持久文件项快照，只读且不更新其指纹
+    """
+    if not isinstance(current, dict) or not isinstance(frozen, dict):
+        return
+    for key in ("modify_time_ns", "change_time_ns"):
+        if key not in frozen and current.get(key) is None:
+            current.pop(key, None)
+    children = current.get("children")
+    frozen_children = frozen.get("children")
+    if isinstance(children, list) and isinstance(frozen_children, list):
+        for child, frozen_child in zip(children, frozen_children):
+            _normalize_legacy_fileitem_timestamps(child, frozen_child)
+
+
 def _build_transfer_result_settlement(
         task: TransferTask,
         transferinfo: TransferInfo,
@@ -110,6 +129,10 @@ def _build_transfer_result_settlement(
         for key in ("failure_stage", "recovery_action", "cleanup_status", "cleanup_error"):
             if normalized_frozen_transferinfo.get(key) is None:
                 normalized_frozen_transferinfo.pop(key, None)
+        for field in ("fileitem", "target_diritem", "target_item"):
+            _normalize_legacy_fileitem_timestamps(
+                current_transferinfo.get(field), normalized_frozen_transferinfo.get(field),
+            )
     if (
             isinstance(normalized_frozen_transferinfo, dict)
             and normalized_frozen_transferinfo != current_transferinfo
@@ -583,8 +606,8 @@ class TransferSettlementOwner(_TransferOwnerBase):
             self._record_scrape_target(task, transferinfo)
             self.notify_successful_transfer(task, transferinfo)
 
-        # 全部整理完成且有成功的任务时，发送消息和事件
-        if self.jobview.is_finished(task):
+        # 成功汇总需要季集元数据；缺少元数据的规划拒绝只走失败反馈。
+        if task.meta is not None and self.jobview.is_finished(task):
             with job_lock:
                 transferinfo.file_list_new = list(dict.fromkeys(
                     self._success_target_files.pop(job_id, [])

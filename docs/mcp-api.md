@@ -12,6 +12,15 @@
 缺失或超时返回 `{"url":null}`，不要求先安装插件。本地来源只返回显式声明的链接。
 探测总时限为五秒，结果缓存五分钟；接口不返回文档正文，也不新增 Agent operation。
 
+### 插件生命周期忙碌与超时
+
+`plugin.runtime.status`（`GET /api/v1/plugin/runtime`）的可选 `active_operation` 返回当前
+`operation`、`plugin_id`、`hook`、`elapsed_seconds` 与 `hook_elapsed_seconds`；空值表示没有
+持有者。有在途变更或钩子时 `ready=false`，准备态数量仍由 `pending_count` 独立表达。
+插件变更竞争共享执行权时在副作用前明确拒绝；安装的逐插件或启动准入最多等待五秒。
+调用方超时、取消或停机超时不会终止第三方同步钩子，执行权、实例及数据库保留到真实结束。
+遇到执行结果未知时先只读检查此摘要及插件实际状态，不能仅凭超时重复提交变更。
+
 ### 订阅下载的提交来源
 
 新产生的订阅下载在订阅活动和日志中区分“首次订阅”“洗版升级”或“全集洗版”。
@@ -34,6 +43,44 @@
 升级前历史没有来源标记，界面显示“未记录”，不会按当前订阅设置追溯推断。
 普通订阅的首次提交与洗版订阅补缺在活动中都标记为首次订阅。
 
+### WebAgent 会话状态
+
+`POST /api/v1/message/agent/callback` 在返回前保存首次选择。`already_selected=true` 表示
+该选择已领取执行，客户端仅恢复原反馈；已选但尚未执行时返回 `false`，可重试原选项。
+后端按用户、会话和选择 ID 领取一次执行；入队前明确拒绝可重试，执行结果未知时不重放。
+`echo_user=false` 仅隐藏用户回显，选择结果仍保存；完整快照替换保留隐藏选择收据，
+即使旧快照不含卡片，也不能让后续快照把已选卡片改回 `pending`。普通消息仍按完整快照替换。
+
+会话 `is_processing` 只表示实际执行或排队，空闲等待下一条消息的 worker 不计入。
+工具事件沿用 `tool_id` 与 `assistant_message_id`，跨 steering 后仍更新原助手段。
+全流结束收口所有助手段；缺少终态的结构化工具标为 `error`，旧文本提示保留完成兼容。
+
+### 资源搜索诊断
+
+Web 影视精确与标题 SSE 的 `manual_paging=true` 模式在最终 `done` 事件增加可选
+`diagnostics`。V1 的 `scope=page` 仅覆盖当前页请求，续页沿用来源中的 `search_id`。
+旧后端可缺省此字段，客户端应兼容 `null` 和未知原因代码。普通资源 API 的 `data` 数组
+及 `GET /api/v1/search/last` 保持原合同。
+
+- `searched_sites` 提供实际调度来源的 `site_id`、`site_name`、`attempted`、`outcome`
+  和 `raw_count`。状态为 `success`、`empty`、`error`、`cooldown` 或 `unknown`；
+  未发请求的冷却标记为 `attempted=false`。别名请求和摘要补取的数量按站点累加。
+- `stage_counts` 包含候选数 `candidates` 和保留数 `retained`。`rejection_reasons`
+  使用 `{code,count}`：`filter_params`、`filter_rules`、`title_missing`、`scope_mismatch`、
+  `identity_mismatch`、`caller_filter`、`duplicate`。身份不符可能包含类型不符；
+  索引器内部未报告的丢弃原因不作推测。
+- `rule_groups` 包含 `name`、`status`、`reason`、`media_type` 和 `categories`。
+  `effective` 表示规则适用，`skipped` 不增加拒绝数。标题搜索沿用过滤器的空媒体上下文。
+- `warnings` 使用 `{code,rule_group?}`，代码包括 `rule_group_not_applicable`、
+  `rule_group_missing`、`provider_error`、`provider_cooldown`、`provider_outcome_unknown`。
+  原始异常、下载地址和凭据不进入诊断。
+
+`GET /api/v1/search/last/context` 按认证用户返回完整的 `params`、`results` 和可选
+`diagnostics`。同一用户并发搜索按完成顺序保存，异常或取消保留上次完整记录。普通
+影视、标题、字幕 API 和旧 SSE 完成后也保存结果（含空结果），`diagnostics=null`；
+字幕链接在读取时重新签名。旧全局缓存不迁移，升级后需重新搜索；首次搜索前返回
+空参数、空结果和 `diagnostics=null`。
+
 ### 大集合查询窗口
 
 `POST /api/v1/media/status` 接受 1 至 50 个媒体身份/标题/年份/季号查询，按输入顺序返回
@@ -52,6 +99,10 @@
 `GET /api/v1/site/userdata/{site_id}` 支持 `page` / `count`；趋势界面使用最近 90 条记录，
 并传入 `latest_seeding_only=true`，仅窗口内最新记录携带 `seeding_info`，历史统计字段不变。
 省略该选项时保留每条记录的完整明细；这不会删除或修改采集历史。
+
+`GET /api/v1/site/category/{site_id}` 只返回分类项，不包含 `field`、`delimiter`、`param`
+等搜索配置。分类 `id` 支持整数和文本，数字字符串沿用整数响应；客户端应保留返回值，
+浏览资源时将所选分类用逗号拼接后传入 `site.resource` 的 `query.cat`，不要强制转为整数。
 
 `GET /api/v1/torrent/cache` 支持可选 `page` / `count`，每页最多 200 条，省略两项时保留全量合同。
 `title` 为不区分大小写的标题包含条件，`site` 为站点名称精确条件，均在分页前应用。
@@ -77,6 +128,11 @@
 
 ### 通知配置与交互身份
 
+`slash.run` 返回的是命令已触发，不代表后台命令或通知已完成。消息渠道发起的命令使用
+宿主签名的渠道用户身份；请求头不能指定其他用户，渠道身份缺失或不匹配时会拒绝执行。
+Web 会话沿用当前用户；无渠道调用不携带收件人，插件回执按既有管理员通知目标路由，
+没有可用目标时不发送。
+
 `GET /api/v1/message/notification` 的可空 `poster` 字段提供独立媒体海报。
 新通知从已有媒体上下文提取海报；`image` 继续保留原有渠道图片语义。
 旧通知及没有海报的通知返回 `poster: null`，客户端不应将背景图裁切成海报。
@@ -89,10 +145,22 @@
 请求包含 `action`（`status/register/unregister/pair/test`）、随机 `installation` 和实例 `origin`。
 `register` 另需 APNs `token/topic/environment`；`source` 可选，用于选择启用的 AppPush 渠道。
 账号通知身份由后台注入，客户端不能指定其他用户。注销同时撤销该安装配对的主屏幕通知网页。
+前端仅在用户主动退出登录时请求 `unregister`；服务重启、认证失效及站点认证完成后的重新登录
+只清理登录会话，保留通知绑定。`pair` 返回的绑定码十分钟有效且只能使用一次，完成绑定后无需保留或重新生成。
+AppPush 向中心传递独立海报（旧消息回退到图片）；通知网页点开后显示本条通知的标题、正文和海报，
+并提供 `moviepilot-app://notification` 链接。应先更新 Server，再更新 MoviePilot；图片由接收设备加载，系统通知中的图片展示以浏览器实际支持为准。
+正文不再截取前1000个字符；Server 接受最多65536个字符，系统推送只携带预览和随机消息标识。
+全文在 Server Redis 按设备绑定版本暂存，每个绑定最多20条、每条24小时；网页用自身绑定能力读取，
+不在 URL 中传递正文或令牌。网页也短期暂存最近通知，用于冷启动、恢复和重载时恢复详情，解绑/换绑时清除；
+超过暂存期限或读取失败会给出明确提示，永久历史仍在 MoviePilot 通知中心。
+网页本地绑定记录缺失时，Server 可校验浏览器现存订阅的完整端点与密钥，恢复原设备能力；
+这不需要生成新的绑定码，也不会更改 MoviePilot 登录态或建立另一份订阅。
 AppPush 地址 `PUSH_SERVER_URL` 留空时使用 `MP_SERVER_HOST`；首次操作自动生成并先行持久保存256位实例凭据，再向中心幂等登记现有 `user_uid`。UID 只关联来源，不能据此获取、重置或认领已有凭据。内部 `AppPushCredentials` 按中心地址隔离，不进入通知渠道配置；中心只保存凭据摘要。已有 `PUSH_RELAY_KEY` 手工配置继续兼容。
 `POST /api/v1/notification/app/instance` 仅容器超级管理员可调用，正文为 `{"action":"rotate","source":"已保存的渠道名称"}`。轮换保留设备，候选凭据先落库，响应丢失可在重启后接续；返回值不包含密钥。普通用户的 `/notification/app` 不接受该动作。
 Apple/VAPID 私钥只放在中心 Server，不放入 App 或用户容器。
-消息沿用现有类型开关和管理员/用户路由；无明确用户目标时不广播。部署与免费自签说明见
+消息沿用现有类型开关和管理员/用户路由；“所有用户”范围会查询本实例所有启用账号的不可变通知身份，
+逐账号投递到各自绑定的设备。停用账号和空身份不会进入接收集合，组合路由中已投递的账号不重复发送。
+未经过该范围解析且缺少明确用户目标时不广播，其他渠道继续使用原有默认目标。部署与免费自签说明见
 [MoviePilot-Server](https://github.com/jxxghp/MoviePilot-Server#私有-app-消息推送)。
 
 Discord 仅指定 `userid` 的定向通知使用私聊；无法私聊时返回失败，不转发公共频道。
@@ -430,7 +498,9 @@ Emby、Jellyfin、Plex、Navidrome 的目录、条目、搜索、季集和活动
 - 插件存在分身时，显式选择目标实例或使用已经配置的默认目标。遇到实例歧义、停用目标或插件门禁拒绝时，按错误处理，不猜测另一个实例。
 - 参数省略、空字符串与 `null` 的含义由具体操作决定。例如更新订阅时，省略字段通常保留原值，允许清空的字段可使用空值；不要把整份读取结果不加筛选地回写。
 - `agent_task` 更新的 `enabled:null` 保留原启用状态，仅重命名暂停任务不会恢复调度。MCP 工具发现和 Google 模型发现会读取全部分页；重复游标或超过分页上限时报告失败。
+- `agent_task` 创建时固定真实执行账号；渠道入口须唯一绑定启用账号。后台查询与管理员操作沿用同一账号权限，身份失效记录为失败。升级前的任务须从原会话 `update` 确认绑定或重新创建，详见[自主任务执行账号](agent-execution.md#自主任务执行账号)。
 - 传统消息会话按渠道、配置接入源与原始用户 ID 隔离，停止、清除、状态和确认操作使用同一范围。WebAgent 后台完成追加本轮展示历史，前端完整快照仍按原合同替换。
+- Web 智能助手的临时附件按创建者账号隔离；下载、语音转写和附件事件只接受同一账号登记的引用，跨账号访问按不存在处理。
 - Agent 文件工具的禁止覆盖创建使用排他提交；同目标并发版本修改只允许仍匹配原 SHA 的请求提交。冲突后重新读取当前文件再编辑。`view_image` 使用只读权限，普通用户可读取允许范围内的公共技能图片。
 - 安装市场技能保留用户明确选择的 GitHub 分支，该分支不可用时不改装默认分支。Agent 运行时人格文件变化使缓存失效；关闭 Agent 配置会通过能力 owner 停止服务。
 - 订阅身份包含用户名、媒体类型、来源、媒体 ID、季号、剧集组和音乐实体类型。同编号的电影与电视剧可分别订阅；按来源定位时保留剧集组。同用户并发创建同一目标会复用真实订阅 ID。
